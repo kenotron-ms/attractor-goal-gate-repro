@@ -1,0 +1,7 @@
+[project]
+name = "attractor-goal-gate-repro"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "amplifier",
+]

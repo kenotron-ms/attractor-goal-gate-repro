@@ -7,7 +7,7 @@ treated as success when a provider exists on the outer session.
 ## One-liner
 
 ```bash
-python main.py
+ANTHROPIC_API_KEY=sk-... uv run python main.py
 ```
 
 Look for this mismatch in the output:
@@ -23,10 +23,8 @@ The gate says fail. The pipeline says success.
 
 ## Prerequisites
 
-```bash
-pip install amplifier   # or: uv tool install amplifier
-export ANTHROPIC_API_KEY=sk-...
-```
+[uv](https://docs.astral.sh/uv/) — that's it. `uv run` reads `pyproject.toml`,
+creates an isolated venv, installs `amplifier`, and runs the script in one step.
 
 ## Files
 
