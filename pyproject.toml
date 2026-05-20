@@ -2,6 +2,10 @@
 name = "attractor-goal-gate-repro"
 version = "1.0.0"
 requires-python = ">=3.11"
-dependencies = [
-    "amplifier",
-]
+# No dependencies — run with the amplifier tool venv (see run.sh)
+# All needed modules (amplifier_foundation, amplifier_app_cli, loop-pipeline, etc.)
+# are already installed in ~/.local/share/uv/tools/amplifier/
+dependencies = []
+
+[tool.uv]
+package = false

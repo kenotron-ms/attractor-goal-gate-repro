@@ -2,17 +2,13 @@
 """
 Reproducer: loop-pipeline silently converts goal_gate FAIL to success.
 
-The gate node in repro.dot is instructed to always return {"status": "fail"}.
+The gate node in repro.dot always outputs {"status":"fail"}.
 
 Expected:  [PIPELINE] ✗ gate: fail
 Actual:    [PIPELINE] ✓ gate: success   ← bug
 
-Prerequisites:
-    pip install amplifier   # or: uv tool install amplifier
-    export ANTHROPIC_API_KEY=sk-...
-
 Run:
-    python main.py
+    uv run python main.py
 """
 
 from __future__ import annotations
@@ -22,67 +18,68 @@ import logging
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any
+
+# Show only [PIPELINE] lines — suppress all other Amplifier internals.
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
+
+class _PipelineOnly(logging.Handler):
+    """Emit only lines containing [PIPELINE] so the mismatch stands out."""
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if "[PIPELINE]" in msg:
+            print(msg, flush=True)
+
+_h = _PipelineOnly()
+_h.setFormatter(logging.Formatter("%(message)s"))
+_prog_log = logging.getLogger("amplifier_module_hooks_pipeline_progress")
+_prog_log.handlers = [_h]
+_prog_log.setLevel(logging.DEBUG)
+_prog_log.propagate = False
 
 
-# ---------------------------------------------------------------------------
-# Route [PIPELINE] progress lines to stdout so the mismatch is immediately
-# visible. Without this the hook logs go to the Amplifier log file only.
-# ---------------------------------------------------------------------------
-def _configure_pipeline_logger() -> None:
-    log = logging.getLogger("amplifier_module_hooks_pipeline_progress")
-    if not log.handlers:
-        h = logging.StreamHandler(sys.stdout)
-        h.setFormatter(logging.Formatter("%(message)s"))
-        log.addHandler(h)
-        log.setLevel(logging.DEBUG)
-        log.propagate = False
-
-
-# ---------------------------------------------------------------------------
-# Wire session.spawn so loop-pipeline selects AmplifierBackend.
-# Without this the engine falls back to DirectProviderBackend and the bug
-# path (spawn → _run_with_tool_loop) is never reached.
-# ---------------------------------------------------------------------------
-def _register_spawn(session: object, prepared: object) -> None:
+def _register_spawn(session: Any, prepared: Any) -> None:
+    """Wire session.spawn so AmplifierBackend is selected by loop-pipeline."""
     from amplifier_foundation import Bundle
+    from amplifier_foundation.bundle import PreparedBundle
+
+    assert isinstance(prepared, PreparedBundle)
 
     async def spawn_capability(
         agent_name: str,
         instruction: str,
-        parent_session: object,
-        agent_configs: dict,
+        parent_session: Any,
+        agent_configs: dict[str, dict[str, Any]],
         sub_session_id: str | None = None,
-        orchestrator_config: dict | None = None,
-        parent_messages: list | None = None,
+        orchestrator_config: dict[str, Any] | None = None,
+        parent_messages: list[dict[str, Any]] | None = None,
         provider_preferences: list | None = None,
         self_delegation_depth: int = 0,
-        **kwargs: object,
-    ) -> dict:
-        config: dict = {}
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        # Look up agent config: coordinator's agent_configs first, then bundle agents.
         if agent_name in agent_configs:
             config = agent_configs[agent_name]
-        elif hasattr(prepared, "bundle"):
-            agents = prepared.bundle.agents or {}
-            if agent_name in agents:
-                config = agents[agent_name]
+        elif agent_name in prepared.bundle.agents:
+            config = prepared.bundle.agents[agent_name]
+        else:
+            available = list(agent_configs) + list(prepared.bundle.agents)
+            raise ValueError(f"Agent '{agent_name}' not found. Available: {available}")
 
         child_bundle = Bundle(
-            name=agent_name or "pipeline-node",
+            name=agent_name,
             version="1.0.0",
             session=config.get("session", {}),
             providers=config.get("providers", []),
             tools=config.get("tools", []),
             hooks=config.get("hooks", []),
-            instruction=(
-                config.get("instruction")
-                or (config.get("system") or {}).get("instruction")
-            ),
+            instruction=config.get("instruction")
+            or (config.get("system") or {}).get("instruction"),
         )
 
         result = await prepared.spawn(
             child_bundle=child_bundle,
             instruction=instruction,
-            compose=False,
             session_id=sub_session_id,
             parent_session=parent_session,
             orchestrator_config=orchestrator_config,
@@ -91,8 +88,7 @@ def _register_spawn(session: object, prepared: object) -> None:
             self_delegation_depth=self_delegation_depth,
         )
 
-        result_dict = result or {}
-        output = result_dict.get("output") or result_dict.get("response") or ""
+        output = (result or {}).get("output") or (result or {}).get("response") or ""
         if output:
             print(f"\n[{agent_name} output]\n{output}", flush=True)
 
@@ -101,29 +97,23 @@ def _register_spawn(session: object, prepared: object) -> None:
     session.coordinator.register_capability("session.spawn", spawn_capability)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 async def run() -> int:
-    from amplifier_app_cli.console import console
-    from amplifier_app_cli.session_runner import SessionConfig, create_initialized_session
     from amplifier_foundation import Bundle, load_bundle
-
-    _configure_pipeline_logger()
 
     dot_source = Path("repro.dot").read_text()
     logs_root = tempfile.mkdtemp(prefix="attractor-repro-")
 
-    # Load the trigger bundle (includes amplifier-bundle-attractor@main which places
-    # provider-anthropic on the outer session — the bug condition).
-    base = await load_bundle(str(Path("repro.bundle.md").resolve()))
-
-    # Overlay injects the DOT source at runtime so the bundle file stays clean.
+    # repro.bundle.md defines:
+    #   - provider-anthropic on the outer session (the bug trigger condition)
+    #   - loop-pipeline as orchestrator with profiles: {anthropic: gate-agent}
+    #   - gate-agent: loop-agent + provider-anthropic (inline, no bundle refs)
+    bundle = await load_bundle(str(Path("repro.bundle.md").resolve()))
     overlay = Bundle(
         name="repro-overlay",
         version="1.0.0",
         session={
             "orchestrator": {
+                "module": "loop-pipeline",   # must be explicit in overlay
                 "config": {
                     "dot_source": dot_source,
                     "logs_root": logs_root,
@@ -131,23 +121,16 @@ async def run() -> int:
             }
         },
     )
-    composed = base.compose(overlay)
+    composed = bundle.compose(overlay)
     prepared = await composed.prepare()
 
-    sc = SessionConfig(
-        config={},
-        search_paths=[Path(".")],
-        verbose=False,
-        prepared_bundle=prepared,
-        bundle_name="repro.bundle.md",
-    )
-    initialized = await create_initialized_session(sc, console)
-    _register_spawn(initialized.session, prepared)
+    # Use prepared.create_session() — not the CLI's create_initialized_session(),
+    # which reads existing session state from the parent process.
+    session = await prepared.create_session(session_cwd=Path.cwd())
+    _register_spawn(session, prepared)
 
-    try:
-        await initialized.session.execute("test")
-    finally:
-        await initialized.cleanup()
+    async with session:
+        await session.execute("Run the pipeline")
 
     return 0
 
