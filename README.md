@@ -7,13 +7,13 @@ treated as success when a provider exists on the outer session.
 ## One-liner
 
 ```bash
-ANTHROPIC_API_KEY=sk-... amplifier-triage --attractor-source repro.dot
+python main.py
 ```
 
 Look for this mismatch in the output:
 
 ```
-[pipeline-agent-anthropic output]
+[attractor-agent-anthropic output]
 {"status": "fail", "failure_reason": "intentional: this gate always fails"}
 
 [PIPELINE] ✓ gate: success          ← bug: should be ✗ gate: fail
@@ -24,14 +24,22 @@ The gate says fail. The pipeline says success.
 ## Prerequisites
 
 ```bash
-uv tool install git+https://github.com/microsoft/amplifier-app-actions
+pip install amplifier   # or: uv tool install amplifier
 export ANTHROPIC_API_KEY=sk-...
 ```
 
+## Files
+
+| File | Purpose |
+|------|---------|
+| `repro.dot` | Minimal pipeline — one `goal_gate=true` node that always returns `{"status":"fail"}` |
+| `repro.bundle.md` | Includes `amplifier-bundle-attractor@main`, which places `provider-anthropic` on the outer session — the bug trigger |
+| `main.py` | Runs the pipeline via the Amplifier Python API; routes `[PIPELINE]` logs to stdout |
+
 ## What's happening
 
-`AmplifierBackend.execute()` in the `loop-pipeline` module has a spawn-to-tool-loop
-fallback that fires on **any** FAIL outcome:
+`AmplifierBackend.execute()` in the `loop-pipeline` module contains a
+spawn-to-tool-loop fallback that fires on **any** FAIL outcome:
 
 ```python
 if outcome.status == StageStatus.FAIL and self._provider is not None:
@@ -47,7 +55,8 @@ silently — no warning is emitted.
 
 **Trigger conditions:**
 - `goal_gate=true` on a pipeline node
-- A provider present on the outer `loop-pipeline` session (inherited from `amplifier-bundle-attractor@main`)
+- A provider present on the outer `loop-pipeline` session (inherited from
+  `amplifier-bundle-attractor@main` via `repro.bundle.md`)
 
 ## Pipeline
 
