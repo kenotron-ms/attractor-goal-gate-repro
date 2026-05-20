@@ -1,0 +1,18 @@
+digraph goal_gate_fail_repro {
+  label = "loop-pipeline goal_gate FAIL reproducer"
+
+  start [shape=Mdiamond]
+
+  // This node is instructed to ALWAYS return {"status":"fail"}.
+  // Expected: [PIPELINE] ✗ gate: fail  — no matching edge, pipeline halts
+  // Bug:      [PIPELINE] ✓ gate: success — gate bypassed, reached_done executes
+  gate [
+    goal_gate = true,
+    prompt    = "Output ONLY this JSON — no preamble, no markdown, no text before or after the braces: {\"status\": \"fail\", \"failure_reason\": \"intentional: this gate always fails\"}"
+  ]
+
+  reached_done [shape=Msquare, label="BUG: reached_done\n(should never execute)"]
+
+  start        -> gate
+  gate         -> reached_done [condition = "outcome=success"]
+}
